@@ -188,9 +188,8 @@ jobs:
           ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
           IMAGE_TAG: ${{ needs.code-quality.outputs.commit-hash }}
         run: |
-          # Build multi-stage production image
+          # Build production image
           docker build -f docker/Dockerfile.prod \
-            --target production \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
             --build-arg GIT_COMMIT=${{ github.sha }} \
