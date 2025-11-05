@@ -1,5 +1,5 @@
-# Multi-stage Docker build for production deployment
-FROM python:3.12-slim as base
+# Production Docker image for MLOps Water Quality API
+FROM python:3.12-slim
 
 # Set build arguments
 ARG GIT_COMMIT
@@ -9,11 +9,12 @@ ARG BUILD_DATE
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    FLASK_ENV=production
 
 # Add metadata labels
 LABEL org.opencontainers.image.title="Water Quality ML API" \
-      org.opencontainers.image.description="MLOps Water Quality Prediction API with governance" \
+      org.opencontainers.image.description="MLOps Water Quality Prediction API - Production" \
       org.opencontainers.image.revision=$GIT_COMMIT \
       org.opencontainers.image.created=$BUILD_DATE
 
@@ -24,26 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Development stage
-FROM base as development
-
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-
-CMD ["python", "-m", "flask", "--app", "app.main", "run", "--host=0.0.0.0", "--port=8000", "--debug"]
-
-# Production stage
-FROM base as production
-
 # Create non-root user
 RUN groupadd -r mlops && useradd -r -g mlops mlops
 
-# Copy only production requirements
+# Copy and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install gunicorn
+    pip install --no-cache-dir gunicorn
 
 # Copy application code
 COPY app/ ./app/
@@ -52,11 +40,11 @@ COPY configs/ ./configs/
 COPY governance/ ./governance/
 
 # Copy model artifacts (if available)
-COPY data/processed/transformer.joblib ./data/processed/transformer.joblib
-COPY app/model_registry/ ./app/model_registry/
+COPY data/processed/transformer.joblib ./data/processed/transformer.joblib 2>/dev/null || echo "transformer.joblib not found, skipping"
+COPY app/model_registry/ ./app/model_registry/ 2>/dev/null || echo "model_registry not found, skipping"
 
-# Create necessary directories
-RUN mkdir -p /app/logs /app/tmp && \
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/logs /app/tmp /app/data/processed /app/app/model_registry && \
     chown -R mlops:mlops /app
 
 # Switch to non-root user
@@ -77,8 +65,9 @@ CMD ["gunicorn", \
      "--worker-connections", "1000", \
      "--max-requests", "1000", \
      "--max-requests-jitter", "50", \
+     "--timeout", "120", \
      "--preload", \
-     "--access-logfile", "/app/logs/access.log", \
-     "--error-logfile", "/app/logs/error.log", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-", \
      "--log-level", "info", \
      "app.main:app"]
