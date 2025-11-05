@@ -198,7 +198,8 @@ jobs:
             
             echo "✓ Docker installed successfully"
           else
-            echo "✓ Docker already installed: \$(docker --version)"
+            DOCKER_VERSION=\$(docker --version)
+            echo "✓ Docker already installed: \$DOCKER_VERSION"
           fi
 
           # Ensure Docker service is running
@@ -226,7 +227,8 @@ jobs:
             
             echo "✓ AWS CLI installed successfully"
           else
-            echo "✓ AWS CLI already installed: \$(aws --version)"
+            AWS_VERSION=\$(aws --version)
+            echo "✓ AWS CLI already installed: \$AWS_VERSION"
           fi
           echo ""
 
@@ -292,7 +294,8 @@ jobs:
             "${IMAGE_URI}"
           
           echo "✓ Container started successfully"
-          echo "  → Container ID: \$(sudo docker ps -q -f name=water-quality-app)"
+          RUNNING_CONTAINER_ID=\$(sudo docker ps -q -f name=water-quality-app)
+          echo "  → Container ID: \$RUNNING_CONTAINER_ID"
           echo ""
 
           # Step 6: Health check (Amazon Linux optimized)
@@ -341,24 +344,31 @@ jobs:
           echo "       DEPLOYMENT COMPLETED SUCCESSFULLY"
           echo "========================================="
           echo "Container Name: water-quality-app"
-          echo "Status: \$(sudo docker inspect -f '{{.State.Status}}' water-quality-app 2>/dev/null || echo 'Unknown')"
-          echo "Health: \$(sudo docker inspect -f '{{.State.Health.Status}}' water-quality-app 2>/dev/null || echo 'N/A')"
+          CONTAINER_STATUS=\$(sudo docker inspect -f '{{.State.Status}}' water-quality-app 2>/dev/null || echo 'Unknown')
+          echo "Status: \$CONTAINER_STATUS"
+          CONTAINER_HEALTH=\$(sudo docker inspect -f '{{.State.Health.Status}}' water-quality-app 2>/dev/null || echo 'N/A')
+          echo "Health: \$CONTAINER_HEALTH"
           echo "Port Mapping: ${APP_PORT}:8000"
           echo "Image: ${IMAGE_URI}"
-          echo "Started: \$(sudo docker inspect -f '{{.State.StartedAt}}' water-quality-app 2>/dev/null || echo 'Unknown')"
+          CONTAINER_STARTED=\$(sudo docker inspect -f '{{.State.StartedAt}}' water-quality-app 2>/dev/null || echo 'Unknown')
+          echo "Started: \$CONTAINER_STARTED"
           echo ""
           echo "Network Information:"
           echo "  → Local endpoint: http://localhost:${APP_PORT}/"
           if command -v curl &> /dev/null; then
-            echo "  → Public IP: \$(curl -s -m 3 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo 'Not available')"
-            echo "  → Private IP: \$(curl -s -m 3 http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || echo 'Not available')"
+            PUBLIC_IP=\$(curl -s -m 3 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo 'Not available')
+            echo "  → Public IP: \$PUBLIC_IP"
+            PRIVATE_IP=\$(curl -s -m 3 http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || echo 'Not available')
+            echo "  → Private IP: \$PRIVATE_IP"
           fi
           echo ""
           echo "Container Resources:"
           CONTAINER_ID=\$(sudo docker ps -q -f name=water-quality-app)
           if [ -n "\$CONTAINER_ID" ]; then
-            echo "  → Memory usage: \$(sudo docker stats --no-stream --format 'table {{.MemUsage}}' \$CONTAINER_ID | tail -1)"
-            echo "  → CPU usage: \$(sudo docker stats --no-stream --format 'table {{.CPUPerc}}' \$CONTAINER_ID | tail -1)"
+            MEM_USAGE=\$(sudo docker stats --no-stream --format 'table {{.MemUsage}}' \$CONTAINER_ID | tail -1)
+            echo "  → Memory usage: \$MEM_USAGE"
+            CPU_USAGE=\$(sudo docker stats --no-stream --format 'table {{.CPUPerc}}' \$CONTAINER_ID | tail -1)
+            echo "  → CPU usage: \$CPU_USAGE"
           fi
           echo "========================================="
           EOF
