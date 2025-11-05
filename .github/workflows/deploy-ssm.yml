@@ -1,14 +1,8 @@
-name: Deploy to EC2 via SSM (No SSH)
+name: Deploy to Production via SSM (No SSH)
 
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Environment to deploy'
-        required: true
-        default: 'staging'
-        type: choice
-        options: [staging, production]
       image_tag:
         description: 'Image tag to deploy'
         required: false
@@ -20,9 +14,9 @@ env:
 
 jobs:
   deploy-via-ssm:
-    name: Deploy to EC2 via AWS Systems Manager
+    name: Deploy to Production via AWS Systems Manager
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
+    environment: production
 
     steps:
       - name: Checkout code
@@ -38,18 +32,11 @@ jobs:
       - name: Set deployment variables
         id: vars
         run: |
-          env="${{ github.event.inputs.environment }}"
           tag="${{ github.event.inputs.image_tag }}"
 
-          if [ "$env" = "production" ]; then
-            echo "instance_id=${{ secrets.PROD_EC2_INSTANCE_ID }}" >> $GITHUB_OUTPUT
-            echo "app_dir=/opt/mlops-production" >> $GITHUB_OUTPUT
-            echo "app_port=8000" >> $GITHUB_OUTPUT
-          else
-            echo "instance_id=${{ secrets.STAGING_EC2_INSTANCE_ID }}" >> $GITHUB_OUTPUT
-            echo "app_dir=/opt/mlops-staging" >> $GITHUB_OUTPUT
-            echo "app_port=8000" >> $GITHUB_OUTPUT
-          fi
+          echo "instance_id=${{ secrets.PROD_EC2_INSTANCE_ID }}" >> $GITHUB_OUTPUT
+          echo "app_dir=/opt/mlops-production" >> $GITHUB_OUTPUT
+          echo "app_port=8000" >> $GITHUB_OUTPUT
 
           # ECR registry must be provided via secrets (ECR_REGISTRY or ECR_URI)
           if [ -n "${{ secrets.ECR_REGISTRY }}" ]; then
@@ -77,13 +64,8 @@ jobs:
           else
             echo "⚠ Provided instance_id empty/invalid (regex check failed); attempting to resolve by tag..."
             
-            if [ "${{ github.event.inputs.environment }}" = "production" ]; then
-              TAG_NAME="${{ secrets.PROD_EC2_TAG_NAME }}"
-              [ -z "$TAG_NAME" ] && TAG_NAME="mlops-production"
-            else
-              TAG_NAME="${{ secrets.STAGING_EC2_TAG_NAME }}"
-              [ -z "$TAG_NAME" ] && TAG_NAME="mlops-staging"
-            fi
+            TAG_NAME="${{ secrets.PROD_EC2_TAG_NAME }}"
+            [ -z "$TAG_NAME" ] && TAG_NAME="mlops-production"
 
             echo "Searching for running instance with tag Name=$TAG_NAME in region $AWS_REGION..."
             
@@ -120,15 +102,13 @@ jobs:
             echo ""
             echo "====== ERROR: Could not resolve a valid EC2 instance ID ======"
             echo "Options:"
-            echo "  1. Provide a valid instance ID via secrets:"
-            echo "     - STAGING_EC2_INSTANCE_ID (format: i-xxxxxxxxx or i-xxxxxxxxxxxxxxxxx)"
-            echo "     - PROD_EC2_INSTANCE_ID"
-            echo "  2. Tag your EC2 instance with Name=mlops-staging (or mlops-production)"
-            echo "  3. Or set custom tag name via STAGING_EC2_TAG_NAME/PROD_EC2_TAG_NAME secrets"
+            echo "  1. Provide a valid instance ID via secret:"
+            echo "     - PROD_EC2_INSTANCE_ID (format: i-xxxxxxxxx or i-xxxxxxxxxxxxxxxxx)"
+            echo "  2. Tag your EC2 instance with Name=mlops-production"
+            echo "  3. Or set custom tag name via PROD_EC2_TAG_NAME secret"
             echo ""
             echo "Current values:"
             echo "  - Candidate ID from secret: '$CANDIDATE_ID'"
-            echo "  - Environment: ${{ github.event.inputs.environment }}"
             echo "  - Tag name used: $TAG_NAME"
             echo "  - Region: $AWS_REGION"
             echo "=============================================================="
@@ -145,7 +125,7 @@ jobs:
           IMAGE_URI="${{ steps.vars.outputs.image_uri }}"
           APP_DIR="${{ steps.vars.outputs.app_dir }}"
           APP_PORT="${{ steps.vars.outputs.app_port }}"
-          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          ENVIRONMENT="production"
           ECR_REGISTRY="${{ secrets.ECR_REGISTRY }}"
           AWS_REGION="${{ env.AWS_REGION }}"
 
@@ -575,15 +555,11 @@ jobs:
           
           sleep 15
           
-          if [ "${{ github.event.inputs.environment }}" = "production" ]; then
-            ENDPOINT="${{ secrets.PROD_URL }}"
-          else
-            ENDPOINT="${{ secrets.STAGING_URL }}"
-          fi
+          ENDPOINT="${{ secrets.PROD_URL }}"
           
           if [ -z "$ENDPOINT" ]; then
             echo "⚠️  Warning: No endpoint URL configured"
-            echo "  → Set STAGING_URL or PROD_URL secret to enable external health checks"
+            echo "  → Set PROD_URL secret to enable external health checks"
             echo "=========================================="
             exit 0
           fi
@@ -623,7 +599,7 @@ jobs:
         run: |
           echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Environment**: ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: production" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: ${{ steps.vars.outputs.image_uri }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Instance ID**: ${{ steps.resolve-instance.outputs.resolved_instance_id }}" >> $GITHUB_STEP_SUMMARY
           echo "- **SSM Command ID**: ${{ env.command_id }}" >> $GITHUB_STEP_SUMMARY
