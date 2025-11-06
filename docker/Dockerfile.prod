@@ -1,9 +1,12 @@
 # Production Docker image for MLOps Water Quality API
-FROM python:3.12-slim as base
+FROM python:3.12-slim AS base
 
 # Set build arguments
 ARG GIT_COMMIT
 ARG BUILD_DATE
+ARG AWS_ACCESS_KEY_ID=""
+ARG AWS_SECRET_ACCESS_KEY=""
+ARG AWS_DEFAULT_REGION="ap-south-1"
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -39,9 +42,29 @@ COPY src/ ./src/
 COPY configs/ ./configs/
 COPY governance/ ./governance/
 
-# Copy model artifacts (if available)
-# COPY data/processed/transformer.joblib ./data/processed/transformer.joblib 2>/dev/null || echo "transformer.joblib not found, skipping"
-# COPY app/model_registry/ ./app/model_registry/ 2>/dev/null || echo "model_registry not found, skipping"
+# Copy DVC config and pipeline files so the image can run `dvc pull` if configured.
+# These files must exist in the build context (repo root). If they are not present,
+# the subsequent conditional step will skip pulling artifacts.
+COPY dvc.yaml dvc.lock ./ 2>/dev/null || true
+COPY .dvc .dvc 2>/dev/null || true
+
+# Configure AWS credentials (build-args -> env) and install DVC + AWS CLI
+ENV AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
+        AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
+        AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+
+# Install dvc (with s3 support) and awscli, then attempt to pull the transformer artifact.
+# This step is best-effort: it will not fail the build if the artifact or DVC config is missing.
+RUN pip install --no-cache-dir 'dvc[s3]' awscli && \
+        if [ -n "${AWS_ACCESS_KEY_ID}" ] && [ -n "${AWS_SECRET_ACCESS_KEY}" ]; then \
+            mkdir -p /root/.aws && printf "[default]\naws_access_key_id=%s\naws_secret_access_key=%s\nregion=%s\n" "${AWS_ACCESS_KEY_ID}" "${AWS_SECRET_ACCESS_KEY}" "${AWS_DEFAULT_REGION}" > /root/.aws/credentials ; \
+        fi && \
+        if [ -f dvc.yaml ] || [ -d .dvc ]; then \
+            echo "Found DVC config/pipeline, attempting dvc pull for transformer..." ; \
+            dvc pull -f data/processed/transformer.joblib || echo "dvc pull failed or artifact not present, continuing" ; \
+        else \
+            echo "No DVC config found in build context; skipping dvc pull" ; \
+        fi
 
 # Create necessary directories with proper permissions
 RUN mkdir -p /app/logs /app/tmp /app/data/processed /app/app/model_registry && \
