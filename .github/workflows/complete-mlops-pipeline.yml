@@ -142,6 +142,32 @@ jobs:
           export MLFLOW_EXPERIMENT_NAME="water-potability-ci-${{ needs.code-quality.outputs.commit-hash }}"
           dvc repro
 
+      - name: Verify artifacts were created
+        run: |
+          echo "Verifying ML pipeline outputs..."
+          
+          # Check model
+          if [ ! -f "app/model_registry/model.joblib" ]; then
+            echo "❌ ERROR: Model not created at app/model_registry/model.joblib"
+            ls -la app/model_registry/ || echo "Directory missing"
+            exit 1
+          fi
+          echo "✅ Model found: $(ls -lh app/model_registry/model.joblib)"
+          
+          # Check transformer
+          if [ ! -f "data/processed/transformer.joblib" ]; then
+            echo "❌ ERROR: Transformer not created at data/processed/transformer.joblib"
+            ls -la data/processed/ || echo "Directory missing"
+            exit 1
+          fi
+          echo "✅ Transformer found: $(ls -lh data/processed/transformer.joblib)"
+          
+          # Check metrics
+          if [ -f "artifacts/metrics/train_metrics.json" ]; then
+            echo "✅ Training metrics found"
+            cat artifacts/metrics/train_metrics.json | jq . || true
+          fi
+
       - name: Push DVC changes
         run: dvc push
 
@@ -150,9 +176,9 @@ jobs:
         with:
           name: model-artifacts-${{ needs.code-quality.outputs.commit-hash }}
           path: |
-            app/model_registry/
-            artifacts/
+            app/model_registry/model.joblib
             data/processed/transformer.joblib
+            artifacts/
 
   # Stage 3: Container Build & Security Scan
   build-container:
@@ -171,6 +197,31 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: model-artifacts-${{ needs.code-quality.outputs.commit-hash }}
+          path: .
+
+      - name: Verify model artifacts exist
+        run: |
+          echo "Checking for required model artifacts..."
+          
+          if [ -f "app/model_registry/model.joblib" ]; then
+            echo "✅ Model artifact found: $(ls -lh app/model_registry/model.joblib)"
+          else
+            echo "❌ ERROR: model.joblib not found"
+            echo "Contents of app/model_registry/:"
+            ls -la app/model_registry/ || echo "Directory doesn't exist"
+            exit 1
+          fi
+          
+          if [ -f "data/processed/transformer.joblib" ]; then
+            echo "✅ Transformer artifact found: $(ls -lh data/processed/transformer.joblib)"
+          else
+            echo "❌ ERROR: transformer.joblib not found"
+            echo "Contents of data/processed/:"
+            ls -la data/processed/ || echo "Directory doesn't exist"
+            exit 1
+          fi
+          
+          echo "All required artifacts present!"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -188,6 +239,11 @@ jobs:
           ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
           IMAGE_TAG: ${{ needs.code-quality.outputs.commit-hash }}
         run: |
+          # Verify artifacts one more time before build
+          echo "Final artifact check before Docker build:"
+          ls -lh app/model_registry/model.joblib
+          ls -lh data/processed/transformer.joblib
+          
           # Build production image
           docker build -f docker/Dockerfile.prod \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
@@ -208,6 +264,48 @@ jobs:
           # Scan image
           trivy image --format json --output container-scan.json ${{ steps.build.outputs.image-uri }}
       
+      - name: Test container startup
+        run: |
+          echo "Testing container can start and serve requests..."
+          
+          # Start container
+          docker run -d --name test-container -p 8000:8000 ${{ steps.build.outputs.image-uri }}
+          
+          # Wait for container to be ready (with timeout)
+          echo "Waiting for container to be ready..."
+          for i in {1..30}; do
+            if docker ps | grep -q test-container; then
+              sleep 2
+              if curl -sf http://localhost:8000/ > /dev/null 2>&1; then
+                echo "✅ Container is responding!"
+                break
+              fi
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ Container failed to start or respond"
+              echo "Container logs:"
+              docker logs test-container
+              docker stop test-container || true
+              exit 1
+            fi
+            sleep 2
+          done
+          
+          # Test health endpoint
+          echo "Testing API endpoints..."
+          curl -f http://localhost:8000/ || exit 1
+          
+          # Test prediction endpoint with sample data
+          curl -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"values": [7.0, 200.0, 20000.0, 7.5, 330.0, 400.0, 15.0, 70.0, 4.0]}' \
+            | jq . || exit 1
+          
+          echo "✅ All container tests passed!"
+          
+          # Cleanup
+          docker stop test-container
+          docker rm test-container
       
       - name: Push to ECR
         if: github.ref == 'refs/heads/master'
