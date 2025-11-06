@@ -503,17 +503,23 @@ jobs:
           if ! command -v docker-credential-ecr-login &>/dev/null; then
             echo "Installing amazon-ecr-credential-helper..."
             TMPDIR=$(mktemp -d)
-            # pinned release; update version if you want newer releases
-            curl -fsSL -o "$TMPDIR/ecr-helper.tar.gz" "https://github.com/awslabs/amazon-ecr-credential-helper/releases/download/v0.7.0/docker-credential-ecr-login-v0.7.0-linux-amd64.tar.gz"
-            sudo tar -xzf "$TMPDIR/ecr-helper.tar.gz" -C /usr/local/bin docker-credential-ecr-login || true
-            sudo chmod +x /usr/local/bin/docker-credential-ecr-login || true
+            # Download and install ECR credential helper
+            HELPER_URL="https://amazon-ecr-credential-helper-releases.s3.us-east-2.amazonaws.com/0.8.0/linux-amd64/docker-credential-ecr-login"
+            if curl -fsSL -o "$TMPDIR/docker-credential-ecr-login" "$HELPER_URL"; then
+              sudo mv "$TMPDIR/docker-credential-ecr-login" /usr/local/bin/docker-credential-ecr-login
+              sudo chmod +x /usr/local/bin/docker-credential-ecr-login
+              echo "✓ amazon-ecr-credential-helper installed"
+            else
+              echo "⚠️ Failed to download ECR credential helper, using aws ecr get-login-password instead"
+            fi
             rm -rf "$TMPDIR"
-            echo "✓ amazon-ecr-credential-helper installed"
           fi
 
-          # Configure Docker to use the credential helper for the ECR registry
-          sudo mkdir -p /root/.docker
-          cat > /tmp/docker-config.json <<JSON
+          # Configure Docker to use the credential helper for the ECR registry (if installed)
+          if command -v docker-credential-ecr-login &>/dev/null; then
+            echo "Configuring Docker to use ECR credential helper..."
+            sudo mkdir -p /root/.docker
+            cat > /tmp/docker-config.json <<JSON
           {
             "credHelpers": {
               "${ECR_REGISTRY}": "ecr-login"
@@ -521,22 +527,28 @@ jobs:
           }
           JSON
 
-          # Back up existing config if present
-          if [ -f /root/.docker/config.json ]; then
-            sudo cp /root/.docker/config.json /root/.docker/config.json.bak || true
-          fi
-          sudo mv /tmp/docker-config.json /root/.docker/config.json
-          sudo chmod 600 /root/.docker/config.json
+            # Back up existing config if present
+            if [ -f /root/.docker/config.json ]; then
+              sudo cp /root/.docker/config.json /root/.docker/config.json.bak || true
+            fi
+            sudo mv /tmp/docker-config.json /root/.docker/config.json
+            sudo chmod 600 /root/.docker/config.json
 
-          # Also place config for ec2-user if present (so non-root docker commands also use it)
-          if id -u ec2-user &>/dev/null; then
-            sudo mkdir -p /home/ec2-user/.docker
-            sudo cp /root/.docker/config.json /home/ec2-user/.docker/config.json
-            sudo chown ec2-user:ec2-user /home/ec2-user/.docker/config.json
-            sudo chmod 600 /home/ec2-user/.docker/config.json
+            # Also place config for ec2-user if present (so non-root docker commands also use it)
+            if id -u ec2-user &>/dev/null; then
+              sudo mkdir -p /home/ec2-user/.docker
+              sudo cp /root/.docker/config.json /home/ec2-user/.docker/config.json
+              sudo chown ec2-user:ec2-user /home/ec2-user/.docker/config.json
+              sudo chmod 600 /home/ec2-user/.docker/config.json
+            fi
+            echo "✓ ECR credential helper configured"
           fi
 
+          # Login to ECR and pull image
+          echo "Logging in to ECR..."
           aws ecr get-login-password --region "${AWS_REGION}" | sudo docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+          
+          echo "Pulling image: ${IMAGE_URI}"
           sudo docker pull "${IMAGE_URI}"
 
           # Deploy container
@@ -554,23 +566,56 @@ jobs:
             --log-opt max-file=3 \
             "${IMAGE_URI}"
 
+          # Wait for container to start
+          echo "Waiting for container to start..."
+          sleep 5
+          
+          # Check if container is running
+          if ! sudo docker ps | grep -q water-quality-app; then
+            echo "✗ Container failed to start"
+            echo "Container logs:"
+            sudo docker logs water-quality-app || true
+            exit 1
+          fi
+          echo "✓ Container is running"
+
           # Health check
           echo "Running health check..."
+          
+          # Install curl if not present
           if ! command -v curl &> /dev/null; then
+            echo "Installing curl..."
             sudo yum install -y curl
           fi
+          
+          # Wait for app to be ready
           sleep 10
+          
           for i in {1..30}; do
+            echo "Health check attempt \$i/30..."
+            
+            # Try to connect with verbose error handling
             if curl -sf -m 5 http://localhost:"${APP_PORT}"/ >/dev/null 2>&1; then
               echo "✓ Health check passed!"
-              curl -s -m 5 http://localhost:"${APP_PORT}"/ | head -n 3 || true
+              echo "Response:"
+              curl -s -m 5 http://localhost:"${APP_PORT}"/ | head -n 5 || true
               break
             fi
+            
             if [ \$i -eq 30 ]; then
-              echo "✗ Health check failed"
-              sudo docker logs water-quality-app --tail 50 || true
+              echo "✗ Health check failed after 30 attempts"
+              echo ""
+              echo "Container status:"
+              sudo docker ps -a | grep water-quality-app || true
+              echo ""
+              echo "Container logs (last 100 lines):"
+              sudo docker logs water-quality-app --tail 100 || true
+              echo ""
+              echo "Port check:"
+              sudo netstat -tlnp | grep "${APP_PORT}" || ss -tlnp | grep "${APP_PORT}" || true
               exit 1
             fi
+            
             sleep 2
           done
 
